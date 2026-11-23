@@ -39,6 +39,7 @@ export default function App() {
   const [highlightId, setHighlightId] = useState(null)
   const recognitionRef = useRef(null)
   const transcriptRef = useRef(null)
+  const sessionIdRef = useRef(globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random()}`)
 
   async function refresh() {
     const [doctorRes, appointmentRes, slotRes] = await Promise.all([
@@ -100,7 +101,7 @@ export default function App() {
     const response = await fetch(`${API}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: cleanText }),
+      body: JSON.stringify({ message: cleanText, session_id: sessionIdRef.current }),
     })
     const data = await response.json()
     setTranscript((items) => [...items, { role: 'assistant', text: data.reply }])
