@@ -16,7 +16,7 @@
 import React from 'react'
 
 const Child1 = ({data}) => {
-    const {name,age,skills}=data;
+    const {skills}=data;
 
   return (
     // <div>

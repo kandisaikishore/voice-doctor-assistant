@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import uuid
+from datetime import date as date_type
 from contextlib import closing
 from pathlib import Path
 
@@ -55,10 +56,31 @@ def init_db():
             )
             """
         )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_confirmed_doctor_date_time "
+            "ON appointments (doctor_id, date, time) WHERE status = 'confirmed'"
+        )
         connection.commit()
 
 
 init_db()
+
+
+def normalize_date(value):
+    try:
+        return date_type.fromisoformat(value).isoformat()
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Date must use YYYY-MM-DD format")
+
+
+def available_slots(doctor_id, visit_date):
+    with closing(db()) as connection:
+        rows = connection.execute(
+            "SELECT time FROM appointments WHERE doctor_id = ? AND date = ? AND status = 'confirmed'",
+            (doctor_id, visit_date),
+        ).fetchall()
+    booked = {row["time"] for row in rows}
+    return [slot for slot in SLOTS[doctor_id] if slot not in booked]
 
 
 def appointment_rows():
@@ -97,17 +119,19 @@ def find_slot(text, doctor_id):
 
 
 @app.get("/api/doctors")
-def get_doctors():
+def get_doctors(visit_date: str | None = None):
+    selected_date = normalize_date(visit_date or date_type.today().isoformat())
     return [
-        {**doctor, "slots": SLOTS[doctor["id"]]}
+        {**doctor, "slots": available_slots(doctor["id"], selected_date)}
         for doctor in DOCTORS
     ]
 
 
 @app.get("/api/slots")
-def get_slots():
+def get_slots(visit_date: str | None = None):
+    selected_date = normalize_date(visit_date or date_type.today().isoformat())
     return [
-        {"doctorId": doctor["id"], "doctorName": doctor["name"], "slots": SLOTS[doctor["id"]]}
+        {"doctorId": doctor["id"], "doctorName": doctor["name"], "slots": available_slots(doctor["id"], selected_date)}
         for doctor in DOCTORS
     ]
 
@@ -127,13 +151,15 @@ def check_availability(request: AvailabilityRequest):
     doctor = next((item for item in DOCTORS if item["id"] == request.doctor or item["name"].lower() == request.doctor.lower()), None)
     if not doctor:
         raise HTTPException(404, "Doctor not found")
-    return {"doctor": doctor["name"], "slots": SLOTS[doctor["id"]], "date": request.date or "November 24"}
+    selected_date = normalize_date(request.date or date_type.today().isoformat())
+    return {"doctor": doctor["name"], "slots": available_slots(doctor["id"], selected_date), "date": selected_date}
 
 
 class AppointmentRequest(BaseModel):
     doctor_id: str
     phone: str
     time: str
+    date: str | None = None
 
 
 @app.post("/api/book")
@@ -147,21 +173,19 @@ def book_appointment(request: AppointmentRequest):
     if request.time not in SLOTS[request.doctor_id]:
         raise HTTPException(400, "That slot is not available")
 
-    with closing(db()) as connection:
-        occupied = connection.execute(
-            "SELECT id FROM appointments WHERE doctor_id = ? AND time = ? AND status = 'confirmed'",
-            (request.doctor_id, request.time),
-        ).fetchone()
-        if occupied:
-            raise HTTPException(409, "That slot was just booked")
-        appointment_id = str(uuid.uuid4())[:8]
-        connection.execute(
-            "INSERT INTO appointments (id, doctor_id, doctor_name, phone, date, time, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (appointment_id, request.doctor_id, doctor["name"], phone, "2026-11-24", request.time, "confirmed"),
-        )
-        connection.commit()
+    visit_date = normalize_date(request.date or date_type.today().isoformat())
+    appointment_id = str(uuid.uuid4())[:8]
+    try:
+        with closing(db()) as connection:
+            connection.execute(
+                "INSERT INTO appointments (id, doctor_id, doctor_name, phone, date, time, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (appointment_id, request.doctor_id, doctor["name"], phone, visit_date, request.time, "confirmed"),
+            )
+            connection.commit()
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(409, "That slot was just booked") from error
 
-    row = {"id": appointment_id, "doctorId": request.doctor_id, "doctorName": doctor["name"], "phone": phone, "date": "2026-11-24", "time": request.time, "status": "confirmed"}
+    row = {"id": appointment_id, "doctorId": request.doctor_id, "doctorName": doctor["name"], "phone": phone, "date": visit_date, "time": request.time, "status": "confirmed"}
     return row
 
 
@@ -193,13 +217,14 @@ def cancel_appointment(request: CancelRequest):
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str
 
 
 @app.post("/api/chat")
 def chat(request: ChatRequest):
     message = request.message.strip()
     lowered = message.lower()
-    session_key = "caller"
+    session_key = request.session_id
     phone = phone_from(message)
 
     pending = pending_actions.get(session_key)
@@ -230,13 +255,14 @@ def chat(request: ChatRequest):
                         doctor_id=pending["doctor_id"],
                         phone=pending["phone"],
                         time=pending["time"],
+                        date=pending.get("date"),
                     ))
                 except HTTPException as error:
                     pending_actions.pop(session_key, None)
                     return {"reply": error.detail, "appointment": None}
                 pending_actions.pop(session_key, None)
                 return {
-                    "reply": f"Confirmed. You are booked with {pending['doctor_name']} at {pending['time']} on November 24.",
+                    "reply": f"Confirmed. You are booked with {pending['doctor_name']} at {pending['time']} on {result['date']}.",
                     "appointment": result,
                 }
             pending_actions.pop(session_key, None)
