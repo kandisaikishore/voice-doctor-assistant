@@ -39,7 +39,12 @@ export default function App() {
   const [highlightId, setHighlightId] = useState(null)
   const recognitionRef = useRef(null)
   const transcriptRef = useRef(null)
-  const sessionIdRef = useRef(globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random()}`)
+  const sessionIdRef = useRef(null)
+
+  function getSessionId() {
+    if (!sessionIdRef.current) sessionIdRef.current = globalThis.crypto.randomUUID()
+    return sessionIdRef.current
+  }
 
   async function refresh() {
     const [doctorRes, appointmentRes, slotRes] = await Promise.all([
@@ -53,7 +58,28 @@ export default function App() {
   }
 
   useEffect(() => {
-    refresh()
+    let cancelled = false
+    async function loadDashboard() {
+      try {
+        const [doctorRes, appointmentRes, slotRes] = await Promise.all([
+          fetch(`${API}/doctors`),
+          fetch(`${API}/appointments`),
+          fetch(`${API}/slots`),
+        ])
+        const [doctorData, appointmentData, slotData] = await Promise.all([
+          doctorRes.json(), appointmentRes.json(), slotRes.json(),
+        ])
+        if (!cancelled) {
+          setDoctors(doctorData)
+          setAppointments(appointmentData)
+          setSlots(slotData)
+        }
+      } catch (error) {
+        if (!cancelled) setTranscript((items) => [...items, { role: 'assistant', text: 'Dashboard data could not be loaded. Please refresh and try again.' }])
+      }
+    }
+    loadDashboard()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -101,7 +127,7 @@ export default function App() {
     const response = await fetch(`${API}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: cleanText, session_id: sessionIdRef.current }),
+      body: JSON.stringify({ message: cleanText, session_id: getSessionId() }),
     })
     const data = await response.json()
     setTranscript((items) => [...items, { role: 'assistant', text: data.reply }])
