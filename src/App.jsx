@@ -74,7 +74,7 @@ export default function App() {
           setAppointments(appointmentData)
           setSlots(slotData)
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) setTranscript((items) => [...items, { role: 'assistant', text: 'Dashboard data could not be loaded. Please refresh and try again.' }])
       }
     }
